@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Build output
+build/
+dist/
+*.spec
+
+# IDE / OS
+.vscode/
+.idea/
+Thumbs.db
+.DS_Store
+
+# Generated documents and spreadsheets
+PLANILHAS/*
+NOVOS/*
+CONTÁBIL/
+NÃO CONTÁBIL/
+AUDITORES/
+MODELO/*
+
+# Keep the Excel template in MODELO/ tracked.
