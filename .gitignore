@@ -22,5 +22,8 @@ CONTÁBIL/
 NÃO CONTÁBIL/
 AUDITORES/
 MODELO/*
+ARQUIVOS TESTE/*
+FECHAMENTOS/*
+PLANILHAS/*
 
 # Keep the Excel template in MODELO/ tracked.

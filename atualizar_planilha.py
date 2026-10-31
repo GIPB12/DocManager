@@ -878,20 +878,174 @@ def encontrar_linha_vazia(ws, coluna_valor):
     return None
 
 
+def remover_marcador_pgto(descricao):
+    """Remove apenas a palavra PGTO, preservando o restante da descrição."""
+    descricao = str(descricao or "")
+    descricao = re.sub(r"\bPGTO\b", " ", descricao, flags=re.IGNORECASE)
+    return " ".join(descricao.split()).strip()
+
+
+def encontrar_lancamento_pgto(ws, descricao, valor):
+    """
+    Localiza um lançamento contábil anterior pelo texto sem PGTO e pelo valor.
+    A data é ignorada, pois o documento de pagamento normalmente tem outra data.
+    """
+    descricao_procurada = normalizar_texto(
+        remover_marcador_pgto(descricao)
+    )
+    valor_procurado = valor.quantize(Decimal("0.01"))
+
+    for linha in range(9, 39):
+        descricao_existente = ws.cell(linha, 2).value
+        valor_existente = valor_excel_para_decimal(
+            ws.cell(linha, 5).value
+        )
+
+        if not descricao_existente or valor_existente is None:
+            continue
+
+        descricao_existente_normalizada = normalizar_texto(
+            remover_marcador_pgto(descricao_existente)
+        )
+
+        if (
+            descricao_existente_normalizada == descricao_procurada
+            and valor_existente == valor_procurado
+        ):
+            return linha
+
+    return None
+
+
+def encontrar_pagamento_sem_documento(ws, descricao, valor):
+    """Localiza uma linha criada primeiro pelo arquivo PGTO, ainda sem documento."""
+    descricao_procurada = normalizar_texto(
+        remover_marcador_pgto(descricao)
+    )
+    valor_procurado = valor.quantize(Decimal("0.01"))
+
+    for linha in range(9, 39):
+        descricao_existente = ws.cell(linha, 2).value
+        valor_existente = valor_excel_para_decimal(
+            ws.cell(linha, 5).value
+        )
+        data_vencimento = ws.cell(linha, 3).value
+        data_pagamento = ws.cell(linha, 4).value
+        comprovante = ws.cell(linha, 7).value
+
+        if not descricao_existente or valor_existente is None:
+            continue
+
+        descricao_existente_normalizada = normalizar_texto(
+            remover_marcador_pgto(descricao_existente)
+        )
+
+        # O pagamento foi lançado primeiro: D e G preenchidos,
+        # mas C ainda vazio porque o documento não chegou.
+        if (
+            descricao_existente_normalizada == descricao_procurada
+            and valor_existente == valor_procurado
+            and data_vencimento in (None, "")
+            and data_pagamento not in (None, "")
+            and normalizar_texto(str(comprovante or "")) == "OK"
+        ):
+            return linha
+
+    return None
+
+
 def inserir_lancamento(ws, resultado):
     tipo = resultado["tipo"]
-
-    # Colunas variam conforme a aba do modelo.
-    if tipo == "CONTÁBIL":
-        coluna_data = 4
-        coluna_valor = 5
-    else:
-        coluna_data = 3
-        coluna_valor = 4
-
     data = resultado["data_obj"]
     descricao = resultado["descricao"]
     valor = resultado["valor"]
+
+    # A regra especial de PGTO vale somente para a aba CONTÁBIL.
+    if tipo == "CONTÁBIL":
+        if re.search(r"\bPGTO\b", descricao, flags=re.IGNORECASE):
+            descricao_base = remover_marcador_pgto(descricao)
+
+            linha_existente = encontrar_lancamento_pgto(
+                ws, descricao, valor
+            )
+
+            if linha_existente is not None:
+                data_paga = ws.cell(linha_existente, 4).value
+                comprovante = ws.cell(linha_existente, 7).value
+
+                # Se ambos os campos já estiverem preenchidos, o lançamento
+                # aparenta estar pago. Solicita confirmação antes de sobrescrever.
+                if data_paga not in (None, "") and comprovante not in (None, ""):
+                    continuar = messagebox.askyesno(
+                        "Pagamento já registrado",
+                        "Foi encontrado um lançamento correspondente na linha {} "
+                        "que já possui data de pagamento e comprovante.\n\n"
+                        "Deseja sobrescrever os dados de pagamento?".format(
+                            linha_existente
+                        )
+                    )
+
+                    if not continuar:
+                        return "ignorado"
+
+                celula_data_paga = ws.cell(linha_existente, 4)
+                celula_data_paga.value = data
+                celula_data_paga.number_format = "dd/mm/yyyy"
+                ws.cell(linha_existente, 7).value = "OK"
+
+                ws.column_dimensions["D"].width = 16
+                return "registrado"
+
+            # Não existe lançamento anterior: cria uma nova linha como pago.
+            linha = encontrar_linha_vazia(ws, 5)
+
+            if linha is None:
+                raise ValueError(
+                    "A aba está sem linhas disponíveis entre 9 e 38. "
+                    "O lançamento PGTO não foi registrado."
+                )
+
+            ws.cell(linha, 2).value = descricao_base
+
+            celula_data = ws.cell(linha, 4)
+            celula_data.value = data
+            celula_data.number_format = "dd/mm/yyyy"
+
+            celula_valor = ws.cell(linha, 5)
+            celula_valor.value = float(valor)
+            celula_valor.number_format = '"R$" #,##0.00'
+
+            ws.cell(linha, 7).value = "OK"
+
+            ws.column_dimensions["D"].width = 16
+            ws.column_dimensions["E"].width = 18
+            return "registrado"
+
+        # CONTÁBIL sem PGTO:
+        # Antes de inserir, verifica se o pagamento foi lançado primeiro.
+        # Se foi, completa a mesma linha em vez de criar uma duplicata.
+        linha_com_pagamento = encontrar_pagamento_sem_documento(
+            ws, descricao, valor
+        )
+
+        if linha_com_pagamento is not None:
+            celula_data_documento = ws.cell(linha_com_pagamento, 3)
+            celula_data_documento.value = data
+            celula_data_documento.number_format = "dd/mm/yyyy"
+            ws.cell(linha_com_pagamento, 6).value = "OK"
+            ws.column_dimensions["C"].width = 16
+            return "registrado"
+
+        # B = descrição, C = data de vencimento, E = valor, F = documento.
+        coluna_data = 3
+        coluna_valor = 5
+        coluna_status = 6
+
+    else:
+        # Mantém a lógica original para NÃO CONTÁBIL e AUDITORES.
+        coluna_data = 3
+        coluna_valor = 4
+        coluna_status = None
 
     duplicada = encontrar_duplicidade(
         ws, data, descricao, valor,
@@ -928,7 +1082,6 @@ def inserir_lancamento(ws, resultado):
     celula_data.value = data
     celula_data.number_format = "dd/mm/yyyy"
 
-    # Ajusta a largura para exibir a data e os valores completos.
     ws.column_dimensions[
         openpyxl.utils.get_column_letter(coluna_data)
     ].width = 16
@@ -941,4 +1094,8 @@ def inserir_lancamento(ws, resultado):
     celula_valor.value = float(valor)
     celula_valor.number_format = '"R$" #,##0.00'
 
+    if coluna_status is not None:
+        ws.cell(linha, coluna_status).value = "OK"
+
     return "registrado"
+
